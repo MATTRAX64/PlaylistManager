@@ -1,3 +1,10 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Playlist Manager — recherche / écoute / téléchargement de playlists YouTube.
+Dépendances : pip install yt-dlp pywebview mutagen pygame   |  Externe : ffmpeg dans le PATH.
+Lancement   : double-clic (Windows) ou `python music_manager.pyw`
+"""
 import json, os, sys, shutil, tempfile, traceback, threading, urllib.parse
 from datetime import datetime
 from pathlib import Path
@@ -125,11 +132,12 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 .time-label{font-size:11px;color:var(--text3);width:34px;text-align:center;flex-shrink:0}
 .progress-track,.volume-track{height:4px;background:rgba(255,255,255,.18);border-radius:var(--r-full);position:relative;cursor:pointer}
 .progress-track{flex:1}
-.progress-fill,.volume-fill{position:absolute;left:0;top:0;height:100%;background:var(--text);border-radius:var(--r-full)}
+.progress-fill,.volume-fill{position:absolute;left:0;top:0;height:100%;background:var(--text);border-radius:var(--r-full);pointer-events:none}
 .progress-track:hover .progress-fill,.volume-track:hover .volume-fill{background:var(--accent)}
 .player-right{display:flex;align-items:center;justify-content:flex-end;gap:14px}
 .player-right button{color:var(--text2)}.player-right button:hover{color:var(--text)}.player-right svg{width:16px;height:16px}
 .volume-row{display:flex;align-items:center;gap:8px;width:110px}
+.volume-row .volume-track{flex:1;min-width:0}
 .player-status-toast{position:absolute;left:50%;transform:translateX(-50%);top:-34px;font-size:12px;color:var(--text2);background:var(--bg-elev);padding:5px 12px;border-radius:var(--r-full);white-space:nowrap;opacity:0;transition:opacity .2s;display:flex;align-items:center;gap:8px}
 .player-status-toast.show{opacity:1}
 .player-status-toast .pst-bar{width:70px;height:4px;border-radius:var(--r-full);background:rgba(255,255,255,.15);overflow:hidden;flex-shrink:0}
