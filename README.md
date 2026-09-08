@@ -17,8 +17,8 @@ A desktop app to search, listen to, and download YouTube playlists.
   <img src="https://img.shields.io/badge/pygame-audio-informational?style=flat-square" alt="pygame">
   <img src="https://img.shields.io/badge/ffmpeg-external-yellow?style=flat-square" alt="ffmpeg">
   <img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey?style=flat-square" alt="Platform">
-  ### ⬇️ [**Download**](https://github.com/MATTRAX64/PlaylistManager/releases/latest)
 </p>
+### ⬇️ [**Download**](https://github.com/MATTRAX64/PlaylistManager/releases/latest)
 
 ---
 
