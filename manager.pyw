@@ -1,10 +1,3 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-Playlist Manager — recherche / écoute / téléchargement de playlists YouTube.
-Dépendances : pip install yt-dlp pywebview mutagen pygame   |  Externe : ffmpeg dans le PATH.
-Lancement   : double-clic (Windows) ou `python music_manager.pyw`
-"""
 import json, os, sys, shutil, tempfile, traceback, threading, urllib.parse
 from datetime import datetime
 from pathlib import Path
@@ -14,8 +7,9 @@ DATA_FILE = APP_DIR / "data.json"
 SETTINGS_FILE = APP_DIR / "settings.json"
 DEFAULT_DL_DIR = APP_DIR / "Playlists"
 TEMP_DIR = Path(tempfile.gettempdir()) / "playlist_manager_temp"
-DEFAULT_DL_DIR.mkdir(exist_ok=True)
 TEMP_DIR.mkdir(exist_ok=True)
+# NB: DEFAULT_DL_DIR n'est PAS créé ici — il ne doit apparaître qu'au moment d'un
+# vrai téléchargement (voir YT.download_permanent), pas juste au lancement de l'app.
 
 INDEX_HTML = """<!DOCTYPE html>
 <html lang="fr"><head><meta charset="UTF-8"><title>Playlist Manager</title>
@@ -136,8 +130,11 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 .player-right{display:flex;align-items:center;justify-content:flex-end;gap:14px}
 .player-right button{color:var(--text2)}.player-right button:hover{color:var(--text)}.player-right svg{width:16px;height:16px}
 .volume-row{display:flex;align-items:center;gap:8px;width:110px}
-.player-status-toast{position:absolute;left:50%;transform:translateX(-50%);top:-34px;font-size:12px;color:var(--text2);background:var(--bg-elev);padding:5px 12px;border-radius:var(--r-full);white-space:nowrap;opacity:0;transition:opacity .2s}
+.player-status-toast{position:absolute;left:50%;transform:translateX(-50%);top:-34px;font-size:12px;color:var(--text2);background:var(--bg-elev);padding:5px 12px;border-radius:var(--r-full);white-space:nowrap;opacity:0;transition:opacity .2s;display:flex;align-items:center;gap:8px}
 .player-status-toast.show{opacity:1}
+.player-status-toast .pst-bar{width:70px;height:4px;border-radius:var(--r-full);background:rgba(255,255,255,.15);overflow:hidden;flex-shrink:0}
+.player-status-toast .pst-bar-fill{height:100%;width:0%;background:var(--accent);border-radius:var(--r-full);transition:width .15s linear}
+.player-status-toast .pst-bar.hidden{display:none}
 .modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.7);display:flex;align-items:center;justify-content:center;z-index:100;opacity:0;pointer-events:none;transition:opacity .15s}
 .modal-overlay.show{opacity:1;pointer-events:all}
 .modal-box{width:560px;max-height:82vh;background:var(--bg-elev);border-radius:var(--r-lg);display:flex;flex-direction:column;box-shadow:0 24px 64px rgba(0,0,0,.6)}
@@ -178,45 +175,45 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 <div id="app">
   <aside id="sidebar">
     <div class="brand"><div class="brand-logo">🎧</div><div class="brand-name">Playlist</div></div>
-    <nav><a class="nav-item active"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>Rechercher</a></nav>
+    <nav><a class="nav-item active"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg><span data-i18n="navSearch">Rechercher</span></a></nav>
     <div class="sidebar-divider"></div>
-    <div class="fav-header"><span class="fav-title">Tes playlists</span>
+    <div class="fav-header"><span class="fav-title" data-i18n="favTitle">Tes playlists</span>
       <button class="icon-btn" id="recheck-all-btn" title="Vérifier la disponibilité"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg></button>
     </div>
-    <div id="fav-list"><div class="empty-fav">Aucune playlist sauvegardée. Cherche-en une et clique sur l'étoile ⭐.</div></div>
+    <div id="fav-list"><div class="empty-fav" data-i18n="favEmpty">Aucune playlist sauvegardée. Cherche-en une et clique sur l'étoile ⭐.</div></div>
   </aside>
   <main id="main">
     <div id="topbar">
       <div class="nav-arrows"><button id="back-btn" title="Retour"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M15 18l-6-6 6-6"/></svg></button></div>
       <div id="search-box"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-        <input type="text" id="search-input" placeholder="Cherche une playlist, ou colle un lien YouTube..."></div>
-      <div><button class="settings-btn" id="settings-btn" title="Paramètres"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></button></div>
+        <input type="text" id="search-input" data-i18n-placeholder="searchPlaceholder" placeholder="Cherche une playlist, ou colle un lien YouTube..."></div>
+      <div><button class="settings-btn" id="settings-btn" data-i18n-title="settingsTitle" title="Paramètres"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></button></div>
     </div>
     <div id="content">
       <section class="view active" id="view-search">
-        <div class="view-header"><div class="view-title">Rechercher des playlists</div>
-          <div class="view-sub">Colle un lien de playlist YouTube (le plus fiable), ou tape un mot-clé</div></div>
+        <div class="view-header"><div class="view-title" data-i18n="searchTitle">Rechercher des playlists</div>
+          <div class="view-sub" data-i18n="searchSub">Colle un lien de playlist YouTube (le plus fiable), ou tape un mot-clé</div></div>
         <div id="search-results"><div class="empty-state"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-          <div class="empty-state-title">Trouve tes playlists</div><div class="empty-state-sub">Colle un lien type youtube.com/playlist?list=... pour un résultat garanti, ou cherche par mot-clé.</div></div></div>
+          <div class="empty-state-title" data-i18n="emptyTitle">Trouve tes playlists</div><div class="empty-state-sub" data-i18n="emptySub">Colle un lien type youtube.com/playlist?list=... pour un résultat garanti, ou cherche par mot-clé.</div></div></div>
       </section>
       <section class="view" id="view-playlist"><div id="playlist-detail-content"></div></section>
     </div>
   </main>
   <div id="player-bar">
-    <div class="player-status-toast" id="player-toast"></div>
-    <div class="now-playing" id="now-playing"><div class="np-empty">Aucune lecture en cours</div></div>
+    <div class="player-status-toast" id="player-toast"><span id="player-toast-text"></span><div class="pst-bar hidden" id="player-toast-bar"><div class="pst-bar-fill" id="player-toast-bar-fill"></div></div></div>
+    <div class="now-playing" id="now-playing"><div class="np-empty" data-i18n="noPlayback">Aucune lecture en cours</div></div>
     <div class="player-center">
       <div class="transport">
-        <button id="prev-btn" title="Précédent"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg></button>
-        <button id="play-pause-btn" title="Lecture/Pause"><svg id="play-icon" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg><svg id="pause-icon" viewBox="0 0 24 24" fill="currentColor" style="display:none"><path d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg></button>
-        <button id="next-btn" title="Suivant"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M16 18h2V6h-2zM6 18l8.5-6L6 6z"/></svg></button>
+        <button id="prev-btn" data-i18n-title="prevTitle" title="Précédent"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg></button>
+        <button id="play-pause-btn" data-i18n-title="playPauseTitle" title="Lecture/Pause"><svg id="play-icon" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg><svg id="pause-icon" viewBox="0 0 24 24" fill="currentColor" style="display:none"><path d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg></button>
+        <button id="next-btn" data-i18n-title="nextTitle" title="Suivant"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M16 18h2V6h-2zM6 18l8.5-6L6 6z"/></svg></button>
       </div>
       <div class="progress-row"><span class="time-label" id="time-current">0:00</span>
         <div class="progress-track" id="progress-track"><div class="progress-fill" id="progress-fill"></div></div>
         <span class="time-label" id="time-total">0:00</span></div>
     </div>
     <div class="player-right">
-      <button id="download-current-btn" title="Télécharger ce titre" disabled><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></button>
+      <button id="download-current-btn" data-i18n-title="downloadTrackTitle" title="Télécharger ce titre" disabled><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></button>
       <div class="volume-row"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>
         <div class="volume-track" id="volume-track"><div class="volume-fill" id="volume-fill"></div></div></div>
     </div>
@@ -224,11 +221,22 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 </div>
 <div class="modal-overlay" id="settings-modal">
   <div class="modal-box">
-    <div class="modal-header"><div class="modal-title">Paramètres</div>
+    <div class="modal-header"><div class="modal-title" data-i18n="settingsTitle">Paramètres</div>
       <button class="modal-close" id="close-settings-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button></div>
     <div class="modal-body">
-      <div class="setting-group"><div class="setting-group-title">Apparence</div>
-        <div class="setting-row"><div><div class="setting-label">Couleur d'accent</div><div class="setting-desc">Boutons et surlignages</div></div>
+      <div class="setting-group"><div class="setting-group-title" data-i18n="groupGeneral">Général</div>
+        <div class="setting-row"><div><div class="setting-label" data-i18n="languageLabel">Langue</div><div class="setting-desc" data-i18n="languageDesc">Langue de l'interface</div></div>
+          <select class="select-input" id="language-select">
+            <option value="fr">Français</option>
+            <option value="en">English</option>
+            <option value="de">Deutsch</option>
+            <option value="es">Español</option>
+            <option value="ja">日本語</option>
+            <option value="ru">Русский</option>
+          </select></div>
+      </div>
+      <div class="setting-group"><div class="setting-group-title" data-i18n="groupAppearance">Apparence</div>
+        <div class="setting-row"><div><div class="setting-label" data-i18n="accentLabel">Couleur d'accent</div><div class="setting-desc" data-i18n="accentDesc">Boutons et surlignages</div></div>
           <div class="accent-swatches" id="accent-swatches">
             <div class="swatch active" data-color="#1ed760" style="background:#1ed760"></div>
             <div class="swatch" data-color="#4a9eff" style="background:#4a9eff"></div>
@@ -237,26 +245,26 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
             <div class="swatch" data-color="#c774e8" style="background:#c774e8"></div>
             <div class="swatch" data-color="#ffffff" style="background:#fff"></div>
           </div></div>
-        <div class="setting-row"><div><div class="setting-label">Densité des cartes</div><div class="setting-desc">Taille des vignettes</div></div>
-          <select class="select-input" id="density-select"><option value="compact">Compacte</option><option value="normal" selected>Normale</option><option value="large">Grande</option></select></div>
+        <div class="setting-row"><div><div class="setting-label" data-i18n="densityLabel">Densité des cartes</div><div class="setting-desc" data-i18n="densityDesc">Taille des vignettes</div></div>
+          <select class="select-input" id="density-select"><option value="compact" data-i18n="densityCompact">Compacte</option><option value="normal" selected data-i18n="densityNormal">Normale</option><option value="large" data-i18n="densityLarge">Grande</option></select></div>
       </div>
-      <div class="setting-group"><div class="setting-group-title">Lecture</div>
-        <div class="setting-row"><div><div class="setting-label">Qualité audio</div><div class="setting-desc">Qualité du MP3</div></div>
+      <div class="setting-group"><div class="setting-group-title" data-i18n="groupPlayback">Lecture</div>
+        <div class="setting-row"><div><div class="setting-label" data-i18n="qualityLabel">Qualité audio</div><div class="setting-desc" data-i18n="qualityDesc">Qualité du MP3</div></div>
           <select class="select-input" id="quality-select"><option value="128">128 kbps</option><option value="192" selected>192 kbps</option><option value="320">320 kbps</option></select></div>
-        <div class="setting-row"><div><div class="setting-label">Lecture automatique</div><div class="setting-desc">Enchaîne le titre suivant</div></div><div class="toggle on" id="autoplay-toggle"></div></div>
-        <div class="setting-row"><div><div class="setting-label">Volume de départ</div><div class="setting-desc">Volume au lancement</div></div>
+        <div class="setting-row"><div><div class="setting-label" data-i18n="autoplayLabel">Lecture automatique</div><div class="setting-desc" data-i18n="autoplayDesc">Enchaîne le titre suivant</div></div><div class="toggle on" id="autoplay-toggle"></div></div>
+        <div class="setting-row"><div><div class="setting-label" data-i18n="volumeLabel">Volume de départ</div><div class="setting-desc" data-i18n="volumeDesc">Volume au lancement</div></div>
           <select class="select-input" id="default-volume-select"><option value="0.5">50%</option><option value="0.8" selected>80%</option><option value="1.0">100%</option></select></div>
       </div>
-      <div class="setting-group"><div class="setting-group-title">Téléchargements</div>
-        <div class="setting-row"><div><div class="setting-label">Dossier de téléchargement</div><div class="setting-desc" id="download-folder-path"> Playlists/</div></div>
-          <div class="folder-row"><button class="small-btn" id="choose-folder-btn">Changer</button></div></div>
-        <div class="setting-row"><div><div class="setting-label">Ranger par playlist</div><div class="setting-desc">Sous-dossier par playlist</div></div><div class="toggle on" id="organize-toggle"></div></div>
-        <div class="setting-row"><div><div class="setting-label">Ouvrir le dossier après téléchargement</div><div class="setting-desc">Affiche le fichier une fois terminé</div></div><div class="toggle" id="reveal-toggle"></div></div>
+      <div class="setting-group"><div class="setting-group-title" data-i18n="groupDownloads">Téléchargements</div>
+        <div class="setting-row"><div><div class="setting-label" data-i18n="folderLabel">Dossier de téléchargement</div><div class="setting-desc" id="download-folder-path"> Playlists/</div></div>
+          <div class="folder-row"><button class="small-btn" id="choose-folder-btn" data-i18n="changeBtn">Changer</button></div></div>
+        <div class="setting-row"><div><div class="setting-label" data-i18n="organizeLabel">Ranger par playlist</div><div class="setting-desc" data-i18n="organizeDesc">Sous-dossier par playlist</div></div><div class="toggle on" id="organize-toggle"></div></div>
+        <div class="setting-row"><div><div class="setting-label" data-i18n="revealLabel">Ouvrir le dossier après téléchargement</div><div class="setting-desc" data-i18n="revealDesc">Affiche le fichier une fois terminé</div></div><div class="toggle" id="reveal-toggle"></div></div>
       </div>
-      <div class="setting-group"><div class="setting-group-title">Données</div>
-        <div class="setting-row"><div><div class="setting-label">Vérification automatique</div><div class="setting-desc">Au démarrage</div></div><div class="toggle on" id="autocheck-toggle"></div></div>
-        <div class="setting-row"><div><div class="setting-label">Nettoyer le cache temporaire</div><div class="setting-desc">Fichiers audio d'écoute</div></div><button class="small-btn" id="clear-cache-btn">Nettoyer</button></div>
-        <div class="setting-row"><div><div class="setting-label">Réinitialiser toutes les playlists</div><div class="setting-desc">Irréversible</div></div><button class="small-btn danger-btn" id="reset-data-btn">Tout supprimer</button></div>
+      <div class="setting-group"><div class="setting-group-title" data-i18n="groupData">Données</div>
+        <div class="setting-row"><div><div class="setting-label" data-i18n="autocheckLabel">Vérification automatique</div><div class="setting-desc" data-i18n="autocheckDesc">Au démarrage</div></div><div class="toggle on" id="autocheck-toggle"></div></div>
+        <div class="setting-row"><div><div class="setting-label" data-i18n="clearCacheLabel">Nettoyer le cache temporaire</div><div class="setting-desc" data-i18n="clearCacheDesc">Fichiers audio d'écoute</div></div><button class="small-btn" id="clear-cache-btn" data-i18n="cleanBtn">Nettoyer</button></div>
+        <div class="setting-row"><div><div class="setting-label" data-i18n="resetLabel">Réinitialiser toutes les playlists</div><div class="setting-desc" data-i18n="resetDesc">Irréversible</div></div><button class="small-btn danger-btn" id="reset-data-btn" data-i18n="resetBtn">Tout supprimer</button></div>
       </div>
     </div>
   </div>
@@ -267,8 +275,222 @@ button{font-family:inherit;cursor:pointer;border:none;background:none;color:inhe
 const state = {
   favorites: {}, currentPlaylistId: null, queue: [], queueIndex: -1, isPlaying: false,
   settings: { accent:"#1ed760", density:"normal", quality:"192", autoplay:true, defaultVolume:0.8,
-              organizeByPlaylist:true, revealAfterDownload:false, autocheck:true, downloadFolder:"Playlists/" }
+              organizeByPlaylist:true, revealAfterDownload:false, autocheck:true, downloadFolder:"Playlists/",
+              language:"fr" }
 };
+
+/* ---------- Traduction de l'interface ---------- */
+const I18N = {
+  fr:{ settingsTitle:"Paramètres", groupGeneral:"Général", languageLabel:"Langue", languageDesc:"Langue de l'interface",
+       groupAppearance:"Apparence", accentLabel:"Couleur d'accent", accentDesc:"Boutons et surlignages",
+       densityLabel:"Densité des cartes", densityDesc:"Taille des vignettes",
+       densityCompact:"Compacte", densityNormal:"Normale", densityLarge:"Grande",
+       groupPlayback:"Lecture", qualityLabel:"Qualité audio", qualityDesc:"Qualité du MP3",
+       autoplayLabel:"Lecture automatique", autoplayDesc:"Enchaîne le titre suivant",
+       volumeLabel:"Volume de départ", volumeDesc:"Volume au lancement",
+       groupDownloads:"Téléchargements", folderLabel:"Dossier de téléchargement", changeBtn:"Changer",
+       organizeLabel:"Ranger par playlist", organizeDesc:"Sous-dossier par playlist",
+       revealLabel:"Ouvrir le dossier après téléchargement", revealDesc:"Affiche le fichier une fois terminé",
+       groupData:"Données", autocheckLabel:"Vérification automatique", autocheckDesc:"Au démarrage",
+       clearCacheLabel:"Nettoyer le cache temporaire", clearCacheDesc:"Fichiers audio d'écoute", cleanBtn:"Nettoyer",
+       resetLabel:"Réinitialiser toutes les playlists", resetDesc:"Irréversible", resetBtn:"Tout supprimer",
+       searchTitle:"Rechercher des playlists", searchPlaceholder:"Cherche une playlist, ou colle un lien YouTube...",
+       searchSub:"Colle un lien de playlist YouTube (le plus fiable), ou tape un mot-clé",
+       emptyTitle:"Trouve tes playlists", emptySub:"Colle un lien type youtube.com/playlist?list=... pour un résultat garanti, ou cherche par mot-clé.",
+       noPlayback:"Aucune lecture en cours", prevTitle:"Précédent", playPauseTitle:"Lecture/Pause", nextTitle:"Suivant",
+       downloadTrackTitle:"Télécharger ce titre", navSearch:"Rechercher", favTitle:"Tes playlists",
+       favEmpty:"Aucune playlist sauvegardée. Cherche-en une et clique sur l'étoile ⭐.",
+       playlistLoaded:"Playlist chargée", tracksWord:"titres", removedFromFav:"Retirée des favoris",
+       addedToFav:"ajoutée à tes favoris", noTrackAvailable:"Aucun titre disponible dans cette playlist",
+       addedPlaylistToFav:"Playlist ajoutée aux favoris", trackUnavailable:"Ce titre n'est pas disponible",
+       playlistDeleted:"Cette playlist a été supprimée sur YouTube", playlistUpToDate:"Playlist à jour",
+       playlistDeletedOrUnreachable:"Playlist supprimée ou inaccessible", checking:"Vérification en cours...",
+       playbackImpossible:"Lecture impossible", downloadingTemp:"Téléchargement...", finalizing:"Finalisation...",
+       retryAttempt:"Échec, nouvelle tentative", downloaded:"Téléchargé", downloadFailed:"Échec du téléchargement",
+       downloadsFinished:"Téléchargement terminé", tracksProcessed:"titre(s) traité(s)",
+       folderUpdated:"Dossier de téléchargement mis à jour", cacheCleared:"Cache temporaire nettoyé",
+       confirmReset:"Es-tu sûr ? Toutes tes playlists sauvegardées seront supprimées définitivement.",
+       allDataReset:"Toutes les données ont été réinitialisées", confirmRemoveFav:"Retirer cette playlist de tes favoris ?",
+       loadFailed:"Impossible de charger", searchFailed:"Erreur de recherche", playlistLoading:"Chargement de la playlist...", genericError:"Erreur", playlistDeletedStatus:"Playlist supprimée", availableStatus:"Disponible", playlistNotFound:"Playlist introuvable, privée ou lien invalide", fetchingDetails:"Récupération des détails...", videosWord:"vidéos", linkTip:" — astuce : colle directement un lien de playlist YouTube (youtube.com/playlist?list=...) pour un résultat garanti.", noPlaylistFound:"Aucune playlist trouvée", tryOtherKeyword:"Essaie un autre mot-clé, ou vérifie l'orthographe.", playFirstTrack:"Écouter le premier titre", totalViews:"au total", deletedBadge:"Supprimée", alreadyDownloaded:"Déjà téléchargé", downloadBtn:"Télécharger", isolatedTrack:"Titre isolé", searchingFor:"Recherche de playlists pour", searchUnavailable:"Recherche indisponible", playAllTitle:"Tout lire", downloadAllBtn:"Télécharger tout", checkBtn:"Vérifier", removeBtn:"Retirer", addToFavBtn:"Ajouter aux favoris", colTitle:"Titre", colChannel:"Chaîne / Vues / Date", colDuration:"Durée", notAvailable:"Non disponible", playlistTypeLabel:"Playlist", playingNow:"Lecture en cours" },
+  en:{ settingsTitle:"Settings", groupGeneral:"General", languageLabel:"Language", languageDesc:"Interface language",
+       groupAppearance:"Appearance", accentLabel:"Accent color", accentDesc:"Buttons and highlights",
+       densityLabel:"Card density", densityDesc:"Thumbnail size",
+       densityCompact:"Compact", densityNormal:"Normal", densityLarge:"Large",
+       groupPlayback:"Playback", qualityLabel:"Audio quality", qualityDesc:"MP3 quality",
+       autoplayLabel:"Autoplay", autoplayDesc:"Play the next track automatically",
+       volumeLabel:"Starting volume", volumeDesc:"Volume on launch",
+       groupDownloads:"Downloads", folderLabel:"Download folder", changeBtn:"Change",
+       organizeLabel:"Organize by playlist", organizeDesc:"Subfolder per playlist",
+       revealLabel:"Open folder after download", revealDesc:"Shows the file once finished",
+       groupData:"Data", autocheckLabel:"Automatic check", autocheckDesc:"On startup",
+       clearCacheLabel:"Clear temporary cache", clearCacheDesc:"Listening audio files", cleanBtn:"Clear",
+       resetLabel:"Reset all playlists", resetDesc:"Irreversible", resetBtn:"Delete everything",
+       searchTitle:"Search playlists", searchPlaceholder:"Search for a playlist, or paste a YouTube link...",
+       searchSub:"Paste a YouTube playlist link (most reliable), or type a keyword",
+       emptyTitle:"Find your playlists", emptySub:"Paste a link like youtube.com/playlist?list=... for a guaranteed result, or search by keyword.",
+       noPlayback:"Nothing playing", prevTitle:"Previous", playPauseTitle:"Play/Pause", nextTitle:"Next",
+       downloadTrackTitle:"Download this track", navSearch:"Search", favTitle:"Your playlists",
+       favEmpty:"No saved playlist. Search for one and click the star ⭐.",
+       playlistLoaded:"Playlist loaded", tracksWord:"tracks", removedFromFav:"Removed from favorites",
+       addedToFav:"added to your favorites", noTrackAvailable:"No track available in this playlist",
+       addedPlaylistToFav:"Playlist added to favorites", trackUnavailable:"This track isn't available",
+       playlistDeleted:"This playlist was deleted on YouTube", playlistUpToDate:"Playlist up to date",
+       playlistDeletedOrUnreachable:"Playlist deleted or unreachable", checking:"Checking...",
+       playbackImpossible:"Playback failed", downloadingTemp:"Downloading...", finalizing:"Finalizing...",
+       retryAttempt:"Failed, retrying", downloaded:"Downloaded", downloadFailed:"Download failed",
+       downloadsFinished:"Download finished", tracksProcessed:"track(s) processed",
+       folderUpdated:"Download folder updated", cacheCleared:"Temporary cache cleared",
+       confirmReset:"Are you sure? All your saved playlists will be permanently deleted.",
+       allDataReset:"All data has been reset", confirmRemoveFav:"Remove this playlist from your favorites?",
+       loadFailed:"Unable to load", searchFailed:"Search error", playlistLoading:"Loading playlist...", genericError:"Error", playlistDeletedStatus:"Playlist deleted", availableStatus:"Available", playlistNotFound:"Playlist not found, private, or invalid link", fetchingDetails:"Fetching details...", videosWord:"videos", linkTip:" — tip: paste a YouTube playlist link directly (youtube.com/playlist?list=...) for a guaranteed result.", noPlaylistFound:"No playlist found", tryOtherKeyword:"Try another keyword, or check the spelling.", playFirstTrack:"Play the first track", totalViews:"total", deletedBadge:"Deleted", alreadyDownloaded:"Already downloaded", downloadBtn:"Download", isolatedTrack:"Single track", searchingFor:"Searching playlists for", searchUnavailable:"Search unavailable", playAllTitle:"Play all", downloadAllBtn:"Download all", checkBtn:"Check", removeBtn:"Remove", addToFavBtn:"Add to favorites", colTitle:"Title", colChannel:"Channel / Views / Date", colDuration:"Duration", notAvailable:"Not available", playlistTypeLabel:"Playlist", playingNow:"Now playing" },
+  de:{ settingsTitle:"Einstellungen", groupGeneral:"Allgemein", languageLabel:"Sprache", languageDesc:"Oberflächensprache",
+       groupAppearance:"Erscheinungsbild", accentLabel:"Akzentfarbe", accentDesc:"Schaltflächen und Hervorhebungen",
+       densityLabel:"Kartendichte", densityDesc:"Größe der Vorschaubilder",
+       densityCompact:"Kompakt", densityNormal:"Normal", densityLarge:"Groß",
+       groupPlayback:"Wiedergabe", qualityLabel:"Audioqualität", qualityDesc:"MP3-Qualität",
+       autoplayLabel:"Automatische Wiedergabe", autoplayDesc:"Spielt den nächsten Titel automatisch ab",
+       volumeLabel:"Startlautstärke", volumeDesc:"Lautstärke beim Start",
+       groupDownloads:"Downloads", folderLabel:"Download-Ordner", changeBtn:"Ändern",
+       organizeLabel:"Nach Playlist ordnen", organizeDesc:"Unterordner pro Playlist",
+       revealLabel:"Ordner nach Download öffnen", revealDesc:"Zeigt die Datei nach Abschluss",
+       groupData:"Daten", autocheckLabel:"Automatische Prüfung", autocheckDesc:"Beim Start",
+       clearCacheLabel:"Temporären Cache leeren", clearCacheDesc:"Audiodateien zum Anhören", cleanBtn:"Leeren",
+       resetLabel:"Alle Playlists zurücksetzen", resetDesc:"Unwiderruflich", resetBtn:"Alles löschen",
+       searchTitle:"Playlists suchen", searchPlaceholder:"Playlist suchen oder YouTube-Link einfügen...",
+       searchSub:"Füge einen YouTube-Playlist-Link ein (am zuverlässigsten) oder gib ein Stichwort ein",
+       emptyTitle:"Finde deine Playlists", emptySub:"Füge einen Link wie youtube.com/playlist?list=... für ein garantiertes Ergebnis ein oder suche nach einem Stichwort.",
+       noPlayback:"Keine Wiedergabe", prevTitle:"Zurück", playPauseTitle:"Wiedergabe/Pause", nextTitle:"Weiter",
+       downloadTrackTitle:"Diesen Titel herunterladen", navSearch:"Suchen", favTitle:"Deine Playlists",
+       favEmpty:"Keine gespeicherte Playlist. Suche eine und klicke auf den Stern ⭐.",
+       playlistLoaded:"Playlist geladen", tracksWord:"Titel", removedFromFav:"Aus Favoriten entfernt",
+       addedToFav:"zu deinen Favoriten hinzugefügt", noTrackAvailable:"Kein Titel in dieser Playlist verfügbar",
+       addedPlaylistToFav:"Playlist zu Favoriten hinzugefügt", trackUnavailable:"Dieser Titel ist nicht verfügbar",
+       playlistDeleted:"Diese Playlist wurde auf YouTube gelöscht", playlistUpToDate:"Playlist aktuell",
+       playlistDeletedOrUnreachable:"Playlist gelöscht oder nicht erreichbar", checking:"Überprüfung läuft...",
+       playbackImpossible:"Wiedergabe fehlgeschlagen", downloadingTemp:"Wird heruntergeladen...", finalizing:"Abschließen...",
+       retryAttempt:"Fehlgeschlagen, erneuter Versuch", downloaded:"Heruntergeladen", downloadFailed:"Download fehlgeschlagen",
+       downloadsFinished:"Download abgeschlossen", tracksProcessed:"Titel verarbeitet",
+       folderUpdated:"Download-Ordner aktualisiert", cacheCleared:"Temporärer Cache geleert",
+       confirmReset:"Bist du sicher? Alle gespeicherten Playlists werden endgültig gelöscht.",
+       allDataReset:"Alle Daten wurden zurückgesetzt", confirmRemoveFav:"Diese Playlist aus deinen Favoriten entfernen?",
+       loadFailed:"Laden nicht möglich", searchFailed:"Suchfehler", playlistLoading:"Playlist wird geladen...", genericError:"Fehler", playlistDeletedStatus:"Playlist gelöscht", availableStatus:"Verfügbar", playlistNotFound:"Playlist nicht gefunden, privat oder ungültiger Link", fetchingDetails:"Details werden abgerufen...", videosWord:"Videos", linkTip:" — Tipp: Füge direkt einen YouTube-Playlist-Link ein (youtube.com/playlist?list=...) für ein garantiertes Ergebnis.", noPlaylistFound:"Keine Playlist gefunden", tryOtherKeyword:"Versuche ein anderes Stichwort oder überprüfe die Schreibweise.", playFirstTrack:"Ersten Titel abspielen", totalViews:"insgesamt", deletedBadge:"Gelöscht", alreadyDownloaded:"Bereits heruntergeladen", downloadBtn:"Herunterladen", isolatedTrack:"Einzelner Titel", searchingFor:"Suche nach Playlists für", searchUnavailable:"Suche nicht verfügbar", playAllTitle:"Alle abspielen", downloadAllBtn:"Alle herunterladen", checkBtn:"Prüfen", removeBtn:"Entfernen", addToFavBtn:"Zu Favoriten hinzufügen", colTitle:"Titel", colChannel:"Kanal / Aufrufe / Datum", colDuration:"Dauer", notAvailable:"Nicht verfügbar", playlistTypeLabel:"Playlist", playingNow:"Wird wiedergegeben" },
+  es:{ settingsTitle:"Ajustes", groupGeneral:"General", languageLabel:"Idioma", languageDesc:"Idioma de la interfaz",
+       groupAppearance:"Apariencia", accentLabel:"Color de acento", accentDesc:"Botones y resaltados",
+       densityLabel:"Densidad de tarjetas", densityDesc:"Tamaño de las miniaturas",
+       densityCompact:"Compacta", densityNormal:"Normal", densityLarge:"Grande",
+       groupPlayback:"Reproducción", qualityLabel:"Calidad de audio", qualityDesc:"Calidad del MP3",
+       autoplayLabel:"Reproducción automática", autoplayDesc:"Encadena la siguiente pista",
+       volumeLabel:"Volumen inicial", volumeDesc:"Volumen al iniciar",
+       groupDownloads:"Descargas", folderLabel:"Carpeta de descargas", changeBtn:"Cambiar",
+       organizeLabel:"Organizar por playlist", organizeDesc:"Subcarpeta por playlist",
+       revealLabel:"Abrir carpeta tras la descarga", revealDesc:"Muestra el archivo al terminar",
+       groupData:"Datos", autocheckLabel:"Comprobación automática", autocheckDesc:"Al iniciar",
+       clearCacheLabel:"Limpiar caché temporal", clearCacheDesc:"Archivos de audio de escucha", cleanBtn:"Limpiar",
+       resetLabel:"Restablecer todas las playlists", resetDesc:"Irreversible", resetBtn:"Eliminar todo",
+       searchTitle:"Buscar playlists", searchPlaceholder:"Busca una playlist o pega un enlace de YouTube...",
+       searchSub:"Pega un enlace de playlist de YouTube (lo más fiable) o escribe una palabra clave",
+       emptyTitle:"Encuentra tus playlists", emptySub:"Pega un enlace tipo youtube.com/playlist?list=... para un resultado garantizado, o busca por palabra clave.",
+       noPlayback:"Sin reproducción", prevTitle:"Anterior", playPauseTitle:"Reproducir/Pausar", nextTitle:"Siguiente",
+       downloadTrackTitle:"Descargar esta pista", navSearch:"Buscar", favTitle:"Tus playlists",
+       favEmpty:"Ninguna playlist guardada. Busca una y haz clic en la estrella ⭐.",
+       playlistLoaded:"Playlist cargada", tracksWord:"pistas", removedFromFav:"Eliminada de favoritos",
+       addedToFav:"añadida a tus favoritos", noTrackAvailable:"Ninguna pista disponible en esta playlist",
+       addedPlaylistToFav:"Playlist añadida a favoritos", trackUnavailable:"Esta pista no está disponible",
+       playlistDeleted:"Esta playlist fue eliminada en YouTube", playlistUpToDate:"Playlist actualizada",
+       playlistDeletedOrUnreachable:"Playlist eliminada o inaccesible", checking:"Comprobando...",
+       playbackImpossible:"Reproducción fallida", downloadingTemp:"Descargando...", finalizing:"Finalizando...",
+       retryAttempt:"Fallo, reintentando", downloaded:"Descargado", downloadFailed:"Descarga fallida",
+       downloadsFinished:"Descarga finalizada", tracksProcessed:"pista(s) procesada(s)",
+       folderUpdated:"Carpeta de descargas actualizada", cacheCleared:"Caché temporal limpiada",
+       confirmReset:"¿Seguro? Todas tus playlists guardadas se eliminarán permanentemente.",
+       allDataReset:"Todos los datos han sido restablecidos", confirmRemoveFav:"¿Eliminar esta playlist de tus favoritos?",
+       loadFailed:"No se pudo cargar", searchFailed:"Error de búsqueda", playlistLoading:"Cargando playlist...", genericError:"Error", playlistDeletedStatus:"Playlist eliminada", availableStatus:"Disponible", playlistNotFound:"Playlist no encontrada, privada o enlace inválido", fetchingDetails:"Obteniendo detalles...", videosWord:"vídeos", linkTip:" — consejo: pega directamente un enlace de playlist de YouTube (youtube.com/playlist?list=...) para un resultado garantizado.", noPlaylistFound:"No se encontró ninguna playlist", tryOtherKeyword:"Prueba otra palabra clave o revisa la ortografía.", playFirstTrack:"Reproducir la primera pista", totalViews:"en total", deletedBadge:"Eliminada", alreadyDownloaded:"Ya descargado", downloadBtn:"Descargar", isolatedTrack:"Pista suelta", searchingFor:"Buscando playlists para", searchUnavailable:"Búsqueda no disponible", playAllTitle:"Reproducir todo", downloadAllBtn:"Descargar todo", checkBtn:"Comprobar", removeBtn:"Quitar", addToFavBtn:"Añadir a favoritos", colTitle:"Título", colChannel:"Canal / Vistas / Fecha", colDuration:"Duración", notAvailable:"No disponible", playlistTypeLabel:"Playlist", playingNow:"Reproduciendo ahora" },
+  ja:{ settingsTitle:"設定", groupGeneral:"一般", languageLabel:"言語", languageDesc:"インターフェースの言語",
+       groupAppearance:"外観", accentLabel:"アクセントカラー", accentDesc:"ボタンとハイライト",
+       densityLabel:"カードの密度", densityDesc:"サムネイルのサイズ",
+       densityCompact:"コンパクト", densityNormal:"標準", densityLarge:"大",
+       groupPlayback:"再生", qualityLabel:"音質", qualityDesc:"MP3の品質",
+       autoplayLabel:"自動再生", autoplayDesc:"次の曲を自動的に再生",
+       volumeLabel:"初期音量", volumeDesc:"起動時の音量",
+       groupDownloads:"ダウンロード", folderLabel:"ダウンロードフォルダ", changeBtn:"変更",
+       organizeLabel:"プレイリストごとに整理", organizeDesc:"プレイリストごとのサブフォルダ",
+       revealLabel:"ダウンロード後にフォルダを開く", revealDesc:"完了後にファイルを表示",
+       groupData:"データ", autocheckLabel:"自動チェック", autocheckDesc:"起動時",
+       clearCacheLabel:"一時キャッシュを削除", clearCacheDesc:"再生用の音声ファイル", cleanBtn:"削除",
+       resetLabel:"すべてのプレイリストをリセット", resetDesc:"元に戻せません", resetBtn:"すべて削除",
+       searchTitle:"プレイリストを検索", searchPlaceholder:"プレイリストを検索、またはYouTubeリンクを貼り付け...",
+       searchSub:"YouTubeプレイリストのリンクを貼り付ける（最も確実）か、キーワードを入力",
+       emptyTitle:"プレイリストを見つけよう", emptySub:"確実な結果を得るには youtube.com/playlist?list=... のようなリンクを貼り付けるか、キーワードで検索してください。",
+       noPlayback:"再生していません", prevTitle:"前へ", playPauseTitle:"再生/一時停止", nextTitle:"次へ",
+       downloadTrackTitle:"この曲をダウンロード", navSearch:"検索", favTitle:"あなたのプレイリスト",
+       favEmpty:"保存されたプレイリストはありません。検索して星⭐をクリックしてください。",
+       playlistLoaded:"プレイリストを読み込みました", tracksWord:"曲", removedFromFav:"お気に入りから削除しました",
+       addedToFav:"をお気に入りに追加しました", noTrackAvailable:"このプレイリストに利用可能な曲がありません",
+       addedPlaylistToFav:"プレイリストをお気に入りに追加しました", trackUnavailable:"この曲は利用できません",
+       playlistDeleted:"このプレイリストはYouTubeで削除されました", playlistUpToDate:"プレイリストは最新です",
+       playlistDeletedOrUnreachable:"プレイリストが削除されたかアクセスできません", checking:"確認中...",
+       playbackImpossible:"再生できません", downloadingTemp:"ダウンロード中...", finalizing:"仕上げ中...",
+       retryAttempt:"失敗、再試行中", downloaded:"ダウンロード済み", downloadFailed:"ダウンロード失敗",
+       downloadsFinished:"ダウンロード完了", tracksProcessed:"曲を処理しました",
+       folderUpdated:"ダウンロードフォルダを更新しました", cacheCleared:"一時キャッシュを削除しました",
+       confirmReset:"本当によろしいですか？保存されたすべてのプレイリストが完全に削除されます。",
+       allDataReset:"すべてのデータがリセットされました", confirmRemoveFav:"このプレイリストをお気に入りから削除しますか？",
+       loadFailed:"読み込めません", searchFailed:"検索エラー", playlistLoading:"プレイリストを読み込み中...", genericError:"エラー", playlistDeletedStatus:"プレイリスト削除済み", availableStatus:"利用可能", playlistNotFound:"プレイリストが見つからないか、非公開か、リンクが無効です", fetchingDetails:"詳細を取得中...", videosWord:"本の動画", linkTip:" — ヒント：確実な結果を得るには、YouTubeプレイリストのリンク（youtube.com/playlist?list=...）を直接貼り付けてください。", noPlaylistFound:"プレイリストが見つかりません", tryOtherKeyword:"別のキーワードを試すか、スペルを確認してください。", playFirstTrack:"最初の曲を再生", totalViews:"合計", deletedBadge:"削除済み", alreadyDownloaded:"ダウンロード済み", downloadBtn:"ダウンロード", isolatedTrack:"単曲", searchingFor:"プレイリストを検索中", searchUnavailable:"検索できません", playAllTitle:"すべて再生", downloadAllBtn:"すべてダウンロード", checkBtn:"確認", removeBtn:"削除", addToFavBtn:"お気に入りに追加", colTitle:"タイトル", colChannel:"チャンネル / 再生数 / 日付", colDuration:"長さ", notAvailable:"利用不可", playlistTypeLabel:"プレイリスト", playingNow:"再生中" },
+  ru:{ settingsTitle:"Настройки", groupGeneral:"Общие", languageLabel:"Язык", languageDesc:"Язык интерфейса",
+       groupAppearance:"Внешний вид", accentLabel:"Акцентный цвет", accentDesc:"Кнопки и выделения",
+       densityLabel:"Плотность карточек", densityDesc:"Размер миниатюр",
+       densityCompact:"Компактно", densityNormal:"Обычно", densityLarge:"Крупно",
+       groupPlayback:"Воспроизведение", qualityLabel:"Качество звука", qualityDesc:"Качество MP3",
+       autoplayLabel:"Автовоспроизведение", autoplayDesc:"Автоматически включает следующий трек",
+       volumeLabel:"Начальная громкость", volumeDesc:"Громкость при запуске",
+       groupDownloads:"Загрузки", folderLabel:"Папка загрузок", changeBtn:"Изменить",
+       organizeLabel:"Сортировать по плейлистам", organizeDesc:"Подпапка для каждого плейлиста",
+       revealLabel:"Открыть папку после загрузки", revealDesc:"Показывает файл по завершении",
+       groupData:"Данные", autocheckLabel:"Автопроверка", autocheckDesc:"При запуске",
+       clearCacheLabel:"Очистить временный кэш", clearCacheDesc:"Аудиофайлы прослушивания", cleanBtn:"Очистить",
+       resetLabel:"Сбросить все плейлисты", resetDesc:"Необратимо", resetBtn:"Удалить всё",
+       searchTitle:"Поиск плейлистов", searchPlaceholder:"Найти плейлист или вставить ссылку YouTube...",
+       searchSub:"Вставьте ссылку на плейлист YouTube (самый надёжный способ) или введите ключевое слово",
+       emptyTitle:"Найдите свои плейлисты", emptySub:"Вставьте ссылку вида youtube.com/playlist?list=... для гарантированного результата, или выполните поиск по ключевому слову.",
+       noPlayback:"Ничего не воспроизводится", prevTitle:"Назад", playPauseTitle:"Воспроизведение/Пауза", nextTitle:"Вперёд",
+       downloadTrackTitle:"Скачать этот трек", navSearch:"Поиск", favTitle:"Ваши плейлисты",
+       favEmpty:"Нет сохранённых плейлистов. Найдите один и нажмите на звёздочку ⭐.",
+       playlistLoaded:"Плейлист загружен", tracksWord:"треков", removedFromFav:"Удалено из избранного",
+       addedToFav:"добавлено в избранное", noTrackAvailable:"В этом плейлисте нет доступных треков",
+       addedPlaylistToFav:"Плейлист добавлен в избранное", trackUnavailable:"Этот трек недоступен",
+       playlistDeleted:"Этот плейлист был удалён на YouTube", playlistUpToDate:"Плейлист актуален",
+       playlistDeletedOrUnreachable:"Плейлист удалён или недоступен", checking:"Проверка...",
+       playbackImpossible:"Не удалось воспроизвести", downloadingTemp:"Загрузка...", finalizing:"Завершение...",
+       retryAttempt:"Ошибка, повторная попытка", downloaded:"Загружено", downloadFailed:"Ошибка загрузки",
+       downloadsFinished:"Загрузка завершена", tracksProcessed:"трек(ов) обработано",
+       folderUpdated:"Папка загрузок обновлена", cacheCleared:"Временный кэш очищен",
+       confirmReset:"Вы уверены? Все сохранённые плейлисты будут удалены безвозвратно.",
+       allDataReset:"Все данные были сброшены", confirmRemoveFav:"Удалить этот плейлист из избранного?",
+       loadFailed:"Не удалось загрузить", searchFailed:"Ошибка поиска", playlistLoading:"Загрузка плейлиста...", genericError:"Ошибка", playlistDeletedStatus:"Плейлист удалён", availableStatus:"Доступен", playlistNotFound:"Плейлист не найден, приватный или неверная ссылка", fetchingDetails:"Получение данных...", videosWord:"видео", linkTip:" — совет: вставьте прямую ссылку на плейлист YouTube (youtube.com/playlist?list=...) для гарантированного результата.", noPlaylistFound:"Плейлист не найден", tryOtherKeyword:"Попробуйте другое ключевое слово или проверьте написание.", playFirstTrack:"Воспроизвести первый трек", totalViews:"всего", deletedBadge:"Удалён", alreadyDownloaded:"Уже загружено", downloadBtn:"Скачать", isolatedTrack:"Отдельный трек", searchingFor:"Поиск плейлистов по запросу", searchUnavailable:"Поиск недоступен", playAllTitle:"Воспроизвести всё", downloadAllBtn:"Скачать всё", checkBtn:"Проверить", removeBtn:"Удалить", addToFavBtn:"Добавить в избранное", colTitle:"Название", colChannel:"Канал / Просмотры / Дата", colDuration:"Длительность", notAvailable:"Недоступно", playlistTypeLabel:"Плейлист", playingNow:"Сейчас играет" },
+};
+function applyLanguage(lang){
+  const dict = I18N[lang] || I18N.fr;
+  document.documentElement.lang = lang;
+  document.querySelectorAll("[data-i18n]").forEach(el=>{
+    const key = el.getAttribute("data-i18n");
+    if(dict[key] !== undefined) el.textContent = dict[key];
+  });
+  document.querySelectorAll("[data-i18n-placeholder]").forEach(el=>{
+    const key = el.getAttribute("data-i18n-placeholder");
+    if(dict[key] !== undefined) el.placeholder = dict[key];
+  });
+  document.querySelectorAll("[data-i18n-title]").forEach(el=>{
+    const key = el.getAttribute("data-i18n-title");
+    if(dict[key] !== undefined) el.title = dict[key];
+  });
+  // ré-affiche les vues dynamiques déjà rendues (liste de favoris, détail playlist)
+  if(typeof renderFavorites === "function") renderFavorites();
+  if(state.currentPlaylistId && state.favorites[state.currentPlaylistId] && typeof renderPlaylistDetail === "function"){
+    renderPlaylistDetail(state.favorites[state.currentPlaylistId], true);
+  }
+}
+function t(key){ const dict = I18N[state.settings.language] || I18N.fr; return dict[key] !== undefined ? dict[key] : (I18N.fr[key]||key); }
+
 /* ---------- Pont vers le lecteur audio Python (pygame) ----------
    La lecture réelle se fait côté Python (pygame.mixer), car WebView2 (Windows)
    refuse de charger des fichiers audio locaux dans une balise <audio>.
@@ -308,9 +530,39 @@ function showToast(msg,type="normal",duration=3000){
 }
 window.showToast = showToast;
 function playerToast(msg,duration=2500){
-  const t=$("#player-toast"); t.textContent=msg; t.classList.add("show");
-  clearTimeout(playerToast._t); playerToast._t=setTimeout(()=>t.classList.remove("show"),duration);
+  const t=$("#player-toast"); $("#player-toast-text").textContent=msg;
+  $("#player-toast-bar").classList.add("hidden");
+  t.classList.add("show");
+  clearTimeout(playerToast._t);
+  if(duration>0) playerToast._t=setTimeout(()=>t.classList.remove("show"),duration);
 }
+/* Affiche/actualise la barre de progression du téléchargement en cours (0-100, ou null pour cacher). */
+function playerToastProgress(msg,pct){
+  const t=$("#player-toast"); $("#player-toast-text").textContent=msg;
+  clearTimeout(playerToast._t);
+  t.classList.add("show");
+  const bar=$("#player-toast-bar"), fill=$("#player-toast-bar-fill");
+  if(pct==null){ bar.classList.add("hidden"); return; }
+  bar.classList.remove("hidden");
+  fill.style.width=Math.max(0,Math.min(100,pct))+"%";
+}
+/* Appelé depuis Python (evaluate_js) pendant le téléchargement temporaire d'une piste.
+   bytesTransferred = octets réellement transités (cumulés sur toutes les tentatives).
+   retry != null signale une tentative ratée (retry = numéro de la tentative qui vient d'échouer). */
+function formatBytes(n){
+  if(!n) return "0 Ko";
+  if(n>=1024*1024) return (n/1024/1024).toFixed(1)+" Mo";
+  return (n/1024).toFixed(0)+" Ko";
+}
+window.onDownloadProgress = function(pct, speedText, bytesTransferred, retry, error){
+  if(retry!=null){
+    playerToastProgress(`${t("retryAttempt")} (${retry}/3)...`, 0);
+    return;
+  }
+  const sizeTxt = formatBytes(bytesTransferred);
+  if(pct>=100){ playerToastProgress(`${t("finalizing")} ${sizeTxt}`,100); return; }
+  playerToastProgress(`${t("downloadingTemp")} ${pct.toFixed(0)}% · ${sizeTxt}${speedText?` (${speedText})`:""}`, pct);
+};
 function formatDuration(sec){
   if(!sec) return "--:--"; sec=Math.floor(sec);
   const h=Math.floor(sec/3600), m=Math.floor((sec%3600)/60), s=sec%60;
@@ -325,7 +577,7 @@ function errorBlock(title,err){
 /* ---------- Favoris ---------- */
 function renderFavorites(){
   const list=$("#fav-list"); const ids=Object.keys(state.favorites);
-  if(!ids.length){ list.innerHTML=`<div class="empty-fav">Aucune playlist sauvegardée. Cherche-en une et clique sur l'étoile ⭐.</div>`; return; }
+  if(!ids.length){ list.innerHTML=`<div class="empty-fav">${t("favEmpty")}</div>`; return; }
   list.innerHTML="";
   ids.forEach(pid=>{
     const pl=state.favorites[pid], deleted=pl.status==="deleted";
@@ -333,7 +585,7 @@ function renderFavorites(){
     el.className="fav-item"+(deleted?" deleted":"")+(state.currentPlaylistId===pid?" selected":"");
     el.innerHTML=`<div class="fav-cover"${pl.thumbnail?` style="background-image:url('${escapeHtml(pl.thumbnail)}');background-size:cover;background-position:center"`:""}>${pl.thumbnail?"":"🎵"}</div><div class="fav-info"><div class="fav-name">${escapeHtml(pl.title)}</div>
       <div class="fav-sub">${pl.tracks.length} titres</div></div>
-      <div class="status-dot" title="${deleted?'Playlist supprimée':'Disponible'}"></div>`;
+      <div class="status-dot" title="${deleted?t("playlistDeletedStatus"):t("availableStatus")}"></div>`;
     el.addEventListener("click",()=>openPlaylistDetail(pid));
     list.appendChild(el);
   });
@@ -356,9 +608,9 @@ async function openPlaylistFromLink(url){
   window.onPlaylistFetchProgress=(done,total)=>renderFetchProgress(el,done,total);
   try{
     const details=await api("add_playlist_from_link",url);
-    if(!details) throw new Error("Playlist introuvable, privée ou lien invalide");
+    if(!details) throw new Error(t("playlistNotFound"));
     renderPlaylistDetail(details, !!state.favorites[details.id]);
-    showToast(`Playlist chargée : ${details.video_count} titres`);
+    showToast(`${t("playlistLoaded")} : ${details.video_count} ${t("tracksWord")}`);
   }catch(err){ el.innerHTML=errorBlock("Impossible de charger ce lien",err); }
   finally{ window.onPlaylistFetchProgress=null; }
 }
@@ -366,20 +618,20 @@ async function openPlaylistFromLink(url){
 function renderFetchProgress(container,done,total,label){
   const pct=total?Math.round((done/total)*100):0;
   container.innerHTML=`<div class="fetch-progress-wrap"><div class="spinner"></div>
-    <div class="fetch-progress-text">${label||`Récupération des détails... ${done}/${total} vidéos`}</div>
+    <div class="fetch-progress-text">${label||`${t("fetchingDetails")} ${done}/${total} ${t("videosWord")}`}</div>
     <div class="fetch-progress-bar"><div class="fetch-progress-fill" style="width:${pct}%"></div></div></div>`;
 }
 
 async function doSearch(q){
   switchView("search");
   const container=$("#search-results");
-  container.innerHTML=`<div class="loading-row"><div class="spinner"></div> Recherche de playlists pour « ${escapeHtml(q)} »...</div>`;
+  container.innerHTML=`<div class="loading-row"><div class="spinner"></div> ${t("searchingFor")} « ${escapeHtml(q)} »...</div>`;
   try{
     const results=await api("search_playlists",q);
     renderSearchResults(results,q);
   }catch(err){
-    container.innerHTML=errorBlock("Recherche indisponible",
-      String(err)+" — astuce : colle directement un lien de playlist YouTube (youtube.com/playlist?list=...) pour un résultat garanti.");
+    container.innerHTML=errorBlock(t("searchUnavailable"),
+      String(err)+t("linkTip"));
   }
 }
 
@@ -388,17 +640,17 @@ function renderSearchResults(results,query){
   $(".view-title").textContent=`Résultats pour « ${query} »`;
   if(!results.length){
     container.innerHTML=`<div class="empty-state"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-      <div class="empty-state-title">Aucune playlist trouvée</div><div class="empty-state-sub">Essaie un autre mot-clé, ou vérifie l'orthographe.</div></div>`;
+      <div class="empty-state-title">${t("noPlaylistFound")}</div><div class="empty-state-sub">${t("tryOtherKeyword")}</div></div>`;
     return;
   }
   const grid=document.createElement("div"); grid.className="card-grid";
   results.forEach(pl=>{
     const saved=!!state.favorites[pl.id];
     const card=document.createElement("div"); card.className="pl-card";
-    card.innerHTML=`<div class="pl-cover"${pl.thumbnail?` style="background-image:url('${escapeHtml(pl.thumbnail)}');background-size:cover;background-position:center"`:""}>${pl.thumbnail?"":"🎵"}<button class="pl-play-fab" title="Écouter le premier titre"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg></button></div>
+    card.innerHTML=`<div class="pl-cover"${pl.thumbnail?` style="background-image:url('${escapeHtml(pl.thumbnail)}');background-size:cover;background-position:center"`:""}>${pl.thumbnail?"":"🎵"}<button class="pl-play-fab" title="${t("playFirstTrack")}"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg></button></div>
       <button class="pl-star-btn ${saved?"saved":""}" title="Ajouter aux favoris"><svg viewBox="0 0 24 24" fill="${saved?"currentColor":"none"}" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg></button>
       <div class="pl-name">${escapeHtml(pl.title)}</div><div class="pl-channel">${escapeHtml(pl.channel)}</div>
-      <div class="pl-meta-line">${pl.video_count?pl.video_count+" vidéos":""}</div>`;
+      <div class="pl-meta-line">${pl.video_count?pl.video_count+" "+t("videosWord"):""}</div>`;
     card.querySelector(".pl-star-btn").addEventListener("click",e=>{ e.stopPropagation(); toggleSavePlaylist(pl,card.querySelector(".pl-star-btn")); });
     card.querySelector(".pl-play-fab").addEventListener("click",e=>{ e.stopPropagation(); playFirstTrackOfPlaylist(pl); });
     card.addEventListener("click",()=>openSearchPlaylistDetail(pl));
@@ -412,7 +664,7 @@ async function toggleSavePlaylist(plStub,btnEl){
     await api("remove_playlist",plStub.id);
     delete state.favorites[plStub.id];
     btnEl.classList.remove("saved"); btnEl.querySelector("svg").setAttribute("fill","none");
-    showToast("Retirée des favoris"); renderFavorites(); return;
+    showToast(t("removedFromFav")); renderFavorites(); return;
   }
   btnEl.innerHTML=`<div class="spinner"></div>`;
   try{
@@ -420,12 +672,12 @@ async function toggleSavePlaylist(plStub,btnEl){
     if(!stub) throw new Error("Playlist introuvable");
     await api("save_playlist",stub);
     state.favorites[stub.id]=stub;
-    showToast(`« ${stub.title} » ajoutée à tes favoris`);
+    showToast(`« ${stub.title} » ${t("addedToFav")}`);
     renderFavorites();
     // si l'utilisateur est déjà sur cette playlist (ouverte depuis la recherche), on
     // continue d'enrichir les pistes en tâche de fond sans le faire attendre
     if(state.currentPlaylistId===stub.id) loadTracksProgressively(stub);
-  }catch(err){ showToast("Erreur : "+err,"danger"); }
+  }catch(err){ showToast(t("genericError")+" : "+err,"danger"); }
   finally{
     btnEl.innerHTML=`<svg viewBox="0 0 24 24" fill="${state.favorites[plStub.id]?"currentColor":"none"}" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>`;
     btnEl.classList.toggle("saved", !!state.favorites[plStub.id]);
@@ -433,14 +685,14 @@ async function toggleSavePlaylist(plStub,btnEl){
 }
 
 async function playFirstTrackOfPlaylist(plStub){
-  playerToast("Chargement de la playlist...");
+  playerToast(t("playlistLoading")||"Chargement de la playlist...");
   try{
     const stub=await api("fetch_playlist_stub",plStub.url);
-    const first = stub && stub.tracks.find(t=>t.downloadable);
+    const first = stub && stub.tracks.find(tr=>tr.downloadable);
     if(!stub || !first) throw new Error("Aucun titre lisible dans cette playlist");
     state.queue=stub.tracks; state.queueIndex=stub.tracks.indexOf(first);
     playTrackAtQueueIndex(state.queueIndex,stub);
-  }catch(err){ showToast("Impossible de charger : "+err,"danger"); }
+  }catch(err){ showToast(t("loadFailed")+" : "+err,"danger"); }
 }
 
 async function openSearchPlaylistDetail(plStub){
@@ -449,7 +701,7 @@ async function openSearchPlaylistDetail(plStub){
   renderFetchProgress(el,0,1,"Chargement de la playlist...");
   try{
     const stub=await api("fetch_playlist_stub",plStub.url);
-    if(!stub) throw new Error("Playlist introuvable ou supprimée");
+    if(!stub) throw new Error(t("playlistDeleted"));
     renderPlaylistDetail(stub, !!state.favorites[stub.id]);
     loadTracksProgressively(stub);
   }catch(err){ el.innerHTML=errorBlock("Playlist introuvable",err); }
@@ -490,28 +742,28 @@ function renderPlaylistDetail(pl,isSaved){
 
   el.innerHTML=`
     <div class="pl-detail-header"><div class="pl-detail-cover"${pl.thumbnail?` style="background-image:url('${escapeHtml(pl.thumbnail)}');background-size:cover;background-position:center"`:""}>${pl.thumbnail?"":"🎵"}</div>
-      <div class="pl-detail-meta"><div class="pl-detail-type">Playlist</div>
+      <div class="pl-detail-meta"><div class="pl-detail-type">${t("playlistTypeLabel")}</div>
         <div class="pl-detail-title">${escapeHtml(pl.title)}</div>
-        <div class="pl-detail-sub">${escapeHtml(pl.channel)} • ${pl.video_count??pl.tracks.length} vidéos${pl.total_views_display?" • "+pl.total_views_display+" au total":""}
-          ${deleted?`<span class="status-badge deleted">Supprimée</span>`:""}</div></div></div>
+        <div class="pl-detail-sub">${escapeHtml(pl.channel)} • ${pl.video_count??pl.tracks.length} ${t("videosWord")}${pl.total_views_display?" • "+pl.total_views_display+" "+t("totalViews"):""}
+          ${deleted?`<span class="status-badge deleted">${t("deletedBadge")}</span>`:""}</div></div></div>
     <div class="pl-detail-actions">
-      <button class="play-all-btn" id="play-all-btn" title="Tout lire"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg></button>
-      <button class="dl-all-btn" id="dl-all-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>Télécharger tout</button>
+      <button class="play-all-btn" id="play-all-btn" title="${t("playAllTitle")}"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg></button>
+      <button class="dl-all-btn" id="dl-all-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>${t("downloadAllBtn")}</button>
       ${saved?`
-        <button class="recheck-btn" id="recheck-one-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>Vérifier</button>
-        <button class="remove-fav-btn" id="remove-fav-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>Retirer</button>
+        <button class="recheck-btn" id="recheck-one-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>${t("checkBtn")}</button>
+        <button class="remove-fav-btn" id="remove-fav-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>${t("removeBtn")}</button>
       `:`
-        <button class="recheck-btn" id="save-from-detail-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>Ajouter aux favoris</button>
+        <button class="recheck-btn" id="save-from-detail-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>${t("addToFavBtn")}</button>
       `}
     </div>
-    <div class="track-table" id="track-table"><div class="track-row header-row"><div>#</div><div>Titre</div><div>Chaîne / Vues / Date</div><div>Durée</div><div></div></div></div>`;
+    <div class="track-table" id="track-table"><div class="track-row header-row"><div>#</div><div>${t("colTitle")}</div><div>${t("colChannel")}</div><div>${t("colDuration")}</div><div></div></div></div>`;
 
   const table=$("#track-table");
-  pl.tracks.forEach((t,idx)=>table.appendChild(renderTrackRow(t,idx,pl)));
+  pl.tracks.forEach((tr,idx)=>table.appendChild(renderTrackRow(tr,idx,pl)));
 
   $("#play-all-btn").addEventListener("click",()=>{
     const playable=pl.tracks.filter(t=>t.downloadable);
-    if(!playable.length) return showToast("Aucun titre disponible dans cette playlist","warning");
+    if(!playable.length) return showToast(t("noTrackAvailable"),"warning");
     state.queue=pl.tracks; state.queueIndex=pl.tracks.indexOf(playable[0]);
     playTrackAtQueueIndex(state.queueIndex,pl);
   });
@@ -524,7 +776,7 @@ function renderPlaylistDetail(pl,isSaved){
       const btn=e.currentTarget; btn.innerHTML=`<div class="spinner"></div>`;
       await api("save_playlist",pl);
       state.favorites[pl.id]=pl;
-      showToast("Playlist ajoutée aux favoris");
+      showToast(t("addedPlaylistToFav"));
       renderFavorites(); renderPlaylistDetail(pl,true);
     });
   }
@@ -543,16 +795,16 @@ function renderTrackRow(track,idx,pl){
   row.innerHTML=`
     <div class="track-num"><span class="track-index">${idx+1}</span><svg class="track-play-icon" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg></div>
     <div class="track-title-cell"><div class="track-title">${escapeHtml(track.title)}</div>
-      ${blocked?`<div class="track-reason">${escapeHtml(track.block_reason||"Non disponible")}</div>`:""}</div>
+      ${blocked?`<div class="track-reason">${escapeHtml(track.block_reason||t("notAvailable"))}</div>`:""}</div>
     <div class="track-meta-line">${metaParts.join(" • ")}</div>
     <div class="track-duration">${formatDuration(track.duration)}</div>
-    <div class="track-actions"><button class="dl-track-btn ${track.downloaded?"downloaded":""}" title="${track.downloaded?"Déjà téléchargé":"Télécharger"}" ${blocked?"disabled":""}>
+    <div class="track-actions"><button class="dl-track-btn ${track.downloaded?"downloaded":""}" title="${track.downloaded?t("alreadyDownloaded"):t("downloadBtn")}" ${blocked?"disabled":""}>
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">${track.downloaded?'<path d="M20 6L9 17l-5-5"/>':'<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>'}</svg>
     </button></div>`;
 
   row.addEventListener("click", e=>{
     if(e.target.closest(".track-actions")) return;
-    if(blocked){ showToast(track.block_reason||"Ce titre n'est pas disponible","warning"); return; }
+    if(blocked){ showToast(track.block_reason||t("trackUnavailable"),"warning"); return; }
     state.queue=pl.tracks; state.queueIndex=idx;
     playTrackAtQueueIndex(idx,pl);
   });
@@ -563,26 +815,26 @@ function renderTrackRow(track,idx,pl){
 }
 
 async function recheckOnePlaylist(pid){
-  playerToast("Vérification en cours...");
+  playerToast(t("checking"));
   try{
     const details=await api("fetch_playlist_details",state.favorites[pid].url,false);
     if(details===null){
       await api("mark_deleted",pid); state.favorites[pid].status="deleted";
-      showToast("Cette playlist a été supprimée sur YouTube","danger");
+      showToast(t("playlistDeleted"),"danger");
     }else{
       await api("save_playlist",details); state.favorites[pid]=details;
-      showToast("Playlist à jour");
+      showToast(t("playlistUpToDate"));
     }
     renderFavorites();
     if(state.currentPlaylistId===pid) renderPlaylistDetail(state.favorites[pid],true);
   }catch(err){
     await api("mark_deleted",pid); state.favorites[pid].status="deleted";
-    renderFavorites(); showToast("Playlist supprimée ou inaccessible","danger");
+    renderFavorites(); showToast(t("playlistDeletedOrUnreachable"),"danger");
   }
 }
 
 async function removeFavoriteAndGoBack(pid){
-  if(!confirm("Retirer cette playlist de tes favoris ?")) return;
+  if(!confirm(t("confirmRemoveFav"))) return;
   await api("remove_playlist",pid);
   delete state.favorites[pid]; state.currentPlaylistId=null;
   renderFavorites(); switchView("search");
@@ -593,17 +845,19 @@ async function playTrackAtQueueIndex(idx,pl){
   const track=state.queue[idx];
   if(!track || !track.downloadable) return;
   updateNowPlayingUI(track,true);
-  playerToast("Téléchargement temporaire...");
+  playerToastProgress(`${t("downloadingTemp")} 0%`,0);
   try{
     audio.src=track.id; // juste un marqueur non-vide pour satisfaire les checks existants
     await api("play_track",track.url,track.id); // télécharge (si besoin) ET lance la lecture côté Python
     audio._paused=false;
     state.isPlaying=true; updatePlayPauseIcon(); updateNowPlayingUI(track,false);
+    playerToastProgress(null,null); playerToast(t("playingNow"),1200);
     $("#download-current-btn").disabled=false;
     $("#download-current-btn").onclick=()=>downloadSingleTrack(track, pl||{id:state.currentPlaylistId,title:""}, null);
     highlightPlayingRow(track.id);
   }catch(err){
-    showToast("Lecture impossible : "+err,"warning");
+    playerToastProgress(null,null);
+    showToast(t("playbackImpossible")+" : "+err,"warning");
     track.downloadable=false; track.block_reason=String(err);
     if(pl) refreshTrackRow(track);
     autoAdvance();
@@ -671,16 +925,16 @@ async function downloadSingleTrack(track,pl,rowEl){
   const original=btn.innerHTML;
   btn.innerHTML=`<div class="spinner"></div>`; btn.disabled=true;
   try{
-    const path=await api("download_track",track.url,pl.title||"Titre isolé",pl.id);
+    const path=await api("download_track",track.url,pl.title||t("isolatedTrack"),pl.id);
     track.downloaded=true; track.local_path=path;
-    showToast(`Téléchargé : ${track.title}`);
+    showToast(`${t("downloaded")} : ${track.title}`);
     if(rowEl){
       btn.classList.add("downloaded");
       btn.innerHTML=`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6L9 17l-5-5"/></svg>`;
       btn.disabled=false;
     }else{ btn.innerHTML=original; btn.disabled=false; }
   }catch(err){
-    showToast("Échec du téléchargement : "+err,"danger");
+    showToast(t("downloadFailed")+" : "+err,"danger");
     btn.innerHTML=original; btn.disabled=false;
   }
 }
@@ -709,7 +963,7 @@ async function downloadWholePlaylist(pl){
   }
   btn.disabled=false;
   btn.innerHTML=`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> Télécharger tout`;
-  showToast(`Téléchargement terminé : ${done} titre(s) traité(s)`);
+  showToast(`${t("downloadsFinished")} : ${done} ${t("tracksProcessed")}`);
 }
 
 /* ---------- Paramètres ---------- */
@@ -738,6 +992,11 @@ $("#density-select").addEventListener("change", e=>{
   persistSettings();
 });
 $("#quality-select").addEventListener("change", e=>{ state.settings.quality=e.target.value; api("set_setting","quality",e.target.value); persistSettings(); });
+$("#language-select").addEventListener("change", e=>{
+  state.settings.language=e.target.value;
+  applyLanguage(state.settings.language);
+  api("set_setting","language",state.settings.language); persistSettings();
+});
 $("#autoplay-toggle").addEventListener("click", e=>{ state.settings.autoplay=!state.settings.autoplay; e.target.classList.toggle("on",state.settings.autoplay); persistSettings(); });
 $("#default-volume-select").addEventListener("change", e=>{
   state.settings.defaultVolume=parseFloat(e.target.value);
@@ -758,13 +1017,13 @@ $("#reveal-toggle").addEventListener("click", e=>{
 $("#autocheck-toggle").addEventListener("click", e=>{ state.settings.autocheck=!state.settings.autocheck; e.target.classList.toggle("on",state.settings.autocheck); persistSettings(); });
 $("#choose-folder-btn").addEventListener("click", async ()=>{
   const folder=await api("choose_download_folder");
-  if(folder){ state.settings.downloadFolder=folder; $("#download-folder-path").textContent=folder; persistSettings(); showToast("Dossier de téléchargement mis à jour"); }
+  if(folder){ state.settings.downloadFolder=folder; $("#download-folder-path").textContent=folder; persistSettings(); showToast(t("folderUpdated")); }
 });
-$("#clear-cache-btn").addEventListener("click", async ()=>{ await api("clear_temp_cache"); showToast("Cache temporaire nettoyé"); });
+$("#clear-cache-btn").addEventListener("click", async ()=>{ await api("clear_temp_cache"); showToast(t("cacheCleared")); });
 $("#reset-data-btn").addEventListener("click", async ()=>{
-  if(!confirm("Es-tu sûr ? Toutes tes playlists sauvegardées seront supprimées définitivement.")) return;
+  if(!confirm(t("confirmReset"))) return;
   await api("reset_all_data"); state.favorites={}; renderFavorites(); switchView("search");
-  showToast("Toutes les données ont été réinitialisées");
+  showToast(t("allDataReset"));
 });
 function persistSettings(){ api("save_frontend_settings",state.settings); }
 
@@ -795,6 +1054,8 @@ function applyLoadedSettings(){
   $("#autocheck-toggle").classList.toggle("on",state.settings.autocheck);
   $("#download-folder-path").textContent=state.settings.downloadFolder;
   $all(".swatch").forEach(s=>s.classList.toggle("active", s.dataset.color===state.settings.accent));
+  $("#language-select").value=state.settings.language||"fr";
+  applyLanguage(state.settings.language||"fr");
 }
 async function autoCheckAllFavorites(){
   for(const pid of Object.keys(state.favorites)){
@@ -903,14 +1164,21 @@ class SettingsStore(JsonStore):
         "accent": "#1ed760", "density": "normal", "quality": "192",
         "autoplay": True, "defaultVolume": 0.8, "organizeByPlaylist": True,
         "revealAfterDownload": False, "autocheck": True,
-        "downloadFolder": str(DEFAULT_DL_DIR),
+        "downloadFolder": str(DEFAULT_DL_DIR), "language": "fr",
     }
 
     def __init__(self, path):
         super().__init__(path, dict(self.DEFAULTS))
 
     def folder(self) -> Path:
-        return Path(self.data.get("downloadFolder") or DEFAULT_DL_DIR)
+        # Si le dossier "Playlists" existe déjà à côté du script, on l'utilise
+        # toujours en priorité — même si settings.json pointe ailleurs (ancien
+        # réglage, dossier renommé/déplacé, etc). Ça évite de créer un second
+        # dossier ("PlaylistsManager" ou autre) alors qu'un dossier valide existe déjà.
+        if DEFAULT_DL_DIR.exists():
+            return DEFAULT_DL_DIR
+        f = self.data.get("downloadFolder")
+        return Path(f) if f else DEFAULT_DL_DIR
 
 
 # ------------------------------------------------------------------ yt-dlp
@@ -1102,6 +1370,24 @@ class YT:
         return stub
 
     @staticmethod
+    def _with_retries(fn, max_attempts=3, on_retry=None):
+        """Exécute fn() avec jusqu'à max_attempts tentatives. Relance l'exception
+        d'origine si tous les essais échouent. on_retry(attempt, error) est appelé
+        entre deux tentatives (pas après la dernière) pour informer l'UI."""
+        last_err = None
+        for attempt in range(1, max_attempts + 1):
+            try:
+                return fn()
+            except Exception as e:
+                last_err = e
+                if attempt < max_attempts:
+                    if on_retry:
+                        try: on_retry(attempt, e)
+                        except Exception: pass
+                    __import__("time").sleep(1.5 * attempt)  # backoff progressif
+        raise last_err
+
+    @staticmethod
     def _extract_dl(video_url, dest_template, quality):
         opts = {"quiet": True, "no_warnings": True, "format": "bestaudio/best",
                 "outtmpl": dest_template, "noplaylist": True,
@@ -1114,9 +1400,51 @@ class YT:
             raise RuntimeError(YT._friendly_error(str(e)))
 
     @staticmethod
-    def download_temp_audio(video_url, quality="192"):
+    def download_temp_audio(video_url, quality="192", progress_cb=None, max_attempts=3):
         if yt_dlp is None: raise RuntimeError("yt-dlp n'est pas installé")
-        info = YT._extract_dl(video_url, str(TEMP_DIR / "%(id)s.%(ext)s"), quality)
+
+        total_bytes_transferred = {"n": 0}  # cumul réel sur toutes les tentatives (ce qui a vraiment transité)
+
+        def make_hook():
+            base = total_bytes_transferred["n"]  # octets déjà comptés lors des tentatives précédentes
+            last_seen = {"n": 0}
+
+            def hook(d):
+                if progress_cb is None: return
+                try:
+                    if d.get("status") == "downloading":
+                        downloaded = d.get("downloaded_bytes") or 0
+                        total = d.get("total_bytes") or d.get("total_bytes_estimate")
+                        pct = (downloaded / total * 100) if total else 0
+                        speed = d.get("speed")
+                        speed_txt = f"{speed/1024:.0f} Ko/s" if speed else ""
+                        last_seen["n"] = downloaded
+                        total_bytes_transferred["n"] = base + downloaded
+                        progress_cb(pct, speed_txt, total_bytes_transferred["n"])
+                    elif d.get("status") == "finished":
+                        total_bytes_transferred["n"] = base + last_seen["n"]
+                        progress_cb(100, "", total_bytes_transferred["n"])
+                except Exception:
+                    pass
+            return hook
+
+        def attempt():
+            opts = {"quiet": True, "no_warnings": True, "format": "bestaudio/best",
+                    "outtmpl": str(TEMP_DIR / "%(id)s.%(ext)s"), "noplaylist": True,
+                    "progress_hooks": [make_hook()],
+                    "postprocessors": [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3",
+                                         "preferredquality": quality}]}
+            try:
+                with yt_dlp.YoutubeDL(opts) as ydl:
+                    return ydl.extract_info(video_url, download=True)
+            except yt_dlp.utils.DownloadError as e:
+                raise RuntimeError(YT._friendly_error(str(e)))
+
+        def on_retry(attempt_no, err):
+            if progress_cb:
+                progress_cb(0, "", total_bytes_transferred["n"], retry=attempt_no, error=str(err))
+
+        info = YT._with_retries(attempt, max_attempts=max_attempts, on_retry=on_retry)
         vid = info.get("id")
         final = TEMP_DIR / f"{vid}.mp3"
         path = str(final) if final.exists() else None
@@ -1128,18 +1456,28 @@ class YT:
         return path, info.get("duration") or 0
 
     @staticmethod
-    def download_permanent(video_url, dest_dir: Path, quality="192", playlist_title=None, playlist_author=None):
+    def download_permanent(video_url, dest_dir: Path, quality="192", playlist_title=None, playlist_author=None, max_attempts=3):
+        """Télécharge d'abord dans un dossier temporaire, puis ne crée/déplace vers
+        le dossier de la playlist qu'une fois le MP3 confirmé — pour ne jamais
+        laisser un dossier de playlist vide si le téléchargement échoue."""
         if yt_dlp is None: raise RuntimeError("yt-dlp n'est pas installé")
-        dest_dir.mkdir(parents=True, exist_ok=True)
-        info = YT._extract_dl(video_url, str(dest_dir / "%(title)s.%(ext)s"), quality)
+        staging = TEMP_DIR / "staging"
+        staging.mkdir(parents=True, exist_ok=True)
+        info = YT._with_retries(lambda: YT._extract_dl(video_url, str(staging / "%(title)s.%(ext)s"), quality),
+                                 max_attempts=max_attempts)
         title = info.get("title", "audio")
-        cand = dest_dir / f"{title}.mp3"
-        path = str(cand) if cand.exists() else None
-        if path is None:
-            mp3s = sorted(dest_dir.glob("*.mp3"), key=lambda p: p.stat().st_mtime, reverse=True)
-            if mp3s: path = str(mp3s[0])
-        if path is None:
+        cand = staging / f"{title}.mp3"
+        staged_path = cand if cand.exists() else None
+        if staged_path is None:
+            mp3s = sorted(staging.glob("*.mp3"), key=lambda p: p.stat().st_mtime, reverse=True)
+            if mp3s: staged_path = mp3s[0]
+        if staged_path is None:
             raise RuntimeError("Fichier MP3 introuvable après téléchargement")
+        # à ce stade seulement, on crée le dossier définitif et on y déplace le fichier
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        final_path = dest_dir / staged_path.name
+        shutil.move(str(staged_path), str(final_path))
+        path = str(final_path)
         tag_mp3(path, title=title,
                 artist=playlist_author or info.get("channel") or info.get("uploader"),
                 album=playlist_title)
@@ -1293,9 +1631,23 @@ class API:
         self.store.reset(); return True
 
     def play_track(self, video_url, track_id):
-        """Télécharge (si besoin) le fichier temporaire puis lance sa lecture via pygame,
-        directement depuis le disque — pas de navigateur/WebView2 impliqué."""
-        path, duration = YT.download_temp_audio(video_url, self.settings.data.get("quality", "192"))
+        """Télécharge (si besoin, avec jusqu'à 3 tentatives) le fichier temporaire
+        puis lance sa lecture via pygame, directement depuis le disque — pas de
+        navigateur/WebView2 impliqué."""
+        win = webview.windows[0] if webview and webview.windows else None
+
+        def progress(pct, speed_txt, bytes_transferred=0, retry=None, error=None):
+            if win is None: return
+            try:
+                win.evaluate_js(
+                    f"window.onDownloadProgress&&window.onDownloadProgress("
+                    f"{pct:.1f},{json.dumps(speed_txt)},{int(bytes_transferred)},"
+                    f"{retry if retry is not None else 'null'},{json.dumps(error) if error else 'null'})")
+            except Exception:
+                pass
+
+        path, duration = YT.download_temp_audio(video_url, self.settings.data.get("quality", "192"),
+                                                  progress_cb=progress, max_attempts=3)
         self.player.play(path, duration)
         return {"duration": duration}
 
